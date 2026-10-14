@@ -11,17 +11,22 @@ from agno.utils.log import log_debug, log_error
 DEFAULT_API_BASE_URL = "https://precleared.dev"
 ADDRESS_SOURCES = ("published", "bought", "scraped", "given", "unknown")
 SENDER_COUNTRIES = ("GB", "US")
+VERDICTS = ("ok_to_email", "consent_needed", "blocked", "unknown")
+UNEXPECTED_RESPONSE = "Precleared returned an unexpected response. Do not send yet; try again later."
 
 DEFAULT_INSTRUCTIONS = dedent(
     """\
     Before the first cold or unsolicited marketing email to anyone who is not already a customer,
-    call check_contact once for that recipient. It is not needed for transactional email such as
-    invoices, receipts or password resets.
+    call check_contact once for that recipient. Check again if what you are offering or where the
+    address came from changes. It is not needed for transactional email such as invoices, receipts
+    or password resets.
     - ok_to_email: you may send, with a footer that meets footer_text. footer_text describes what
       the footer must contain; it is not wording to paste.
     - consent_needed or blocked: do not send. Follow next_step.
     - unknown: a fact could not be established. Treat it as consent_needed unless you can supply
       the missing fact and check again.
+    - An error instead of a verdict means the check could not be made (for example, the daily limit
+      was reached). Do not send that email yet; try again later and carry on with your other work.
     Say where the address came from honestly in address_source. Keep the receipt id with the lead.
     """
 )
@@ -133,7 +138,7 @@ class PreclearedTools(Toolkit):
             return text.replace(self.api_key, "***")
         return text
 
-    def _parse(self, response: Any) -> str:
+    def _parse(self, response: Any, expect_verdict: bool = False) -> str:
         """Return Precleared's JSON as a string, or an error object the model can act on."""
         try:
             data = response.json()
@@ -144,6 +149,10 @@ class PreclearedTools(Toolkit):
             body.setdefault("error", "request_failed")
             body["status"] = response.status_code
             return json.dumps(body)
+        # Only a JSON object (with a known verdict, for a check) counts as an answer. Anything else
+        # becomes an error, so the model never reads a stray value as permission to send.
+        if not isinstance(data, dict) or (expect_verdict and data.get("verdict") not in VERDICTS):
+            return json.dumps({"error": UNEXPECTED_RESPONSE})
         return json.dumps(data)
 
     # -- tools ---------------------------------------------------------------------------
@@ -187,7 +196,7 @@ class PreclearedTools(Toolkit):
         except httpx.HTTPError as e:
             log_error(f"Precleared request failed: {e}")
             return json.dumps({"error": self._redact(f"Precleared request failed: {e}")})
-        return self._parse(response)
+        return self._parse(response, expect_verdict=True)
 
     async def acheck_contact(
         self,
@@ -227,7 +236,7 @@ class PreclearedTools(Toolkit):
         except httpx.HTTPError as e:
             log_error(f"Precleared request failed: {e}")
             return json.dumps({"error": self._redact(f"Precleared request failed: {e}")})
-        return self._parse(response)
+        return self._parse(response, expect_verdict=True)
 
     def get_receipt(self, receipt_id: str) -> str:
         """Fetch the signed receipt for an earlier check, to show what was checked, when, and the verdict.
