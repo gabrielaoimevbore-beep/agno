@@ -83,6 +83,10 @@ def test_init_normalises_and_validates_sender_country():
         PreclearedTools(sender_country="FR")
 
 
+def test_instructions_say_not_to_send_when_the_check_fails():
+    assert "Do not send that email yet" in DEFAULT_INSTRUCTIONS
+
+
 # ============================================================================
 # CHECK CONTACT TESTS
 # ============================================================================
@@ -167,6 +171,14 @@ def test_check_contact_non_json_error(tools):
     assert "502" in result["error"]
 
 
+@pytest.mark.parametrize("body", [[], "ok_to_email", None, {"verdict": "maybe"}, {"reasons": []}])
+def test_check_contact_unexpected_response_is_an_error(tools, body):
+    with patch("agno.tools.precleared.httpx.post", return_value=_response(200, body)):
+        result = json.loads(tools.check_contact("ops@swiftparcel.co.uk", address_source="published"))
+    assert "verdict" not in result
+    assert "unexpected response" in result["error"]
+
+
 # ============================================================================
 # RECEIPT TESTS
 # ============================================================================
@@ -192,6 +204,12 @@ def test_get_receipt_not_found(tools):
     with patch("agno.tools.precleared.httpx.get", return_value=_response(404, {"error": "not found"})):
         result = json.loads(tools.get_receipt("cc_rcpt_FFFFFFFFFFFFFFFF"))
     assert result == {"error": "not found", "status": 404}
+
+
+def test_get_receipt_unexpected_response_is_an_error(tools):
+    with patch("agno.tools.precleared.httpx.get", return_value=_response(200, ["cc_rcpt_0123456789ABCDEF"])):
+        result = json.loads(tools.get_receipt("cc_rcpt_0123456789ABCDEF"))
+    assert "unexpected response" in result["error"]
 
 
 # ============================================================================
@@ -220,6 +238,18 @@ async def test_acheck_contact_validation_skips_request(mock_client_class, tools)
     result = json.loads(await tools.acheck_contact("dave@example.co.uk", address_source="guessed"))
     assert "address_source" in result["error"]
     mock_client_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("agno.tools.precleared.httpx.AsyncClient")
+async def test_acheck_contact_unexpected_response_is_an_error(mock_client_class, tools):
+    client = mock_client_class.return_value.__aenter__.return_value
+    client.post = AsyncMock(return_value=_response(200, {"verdict": "maybe"}))
+
+    result = json.loads(await tools.acheck_contact("sarah.patel@kestrelfreight.co.uk", address_source="published"))
+
+    assert "verdict" not in result
+    assert "unexpected response" in result["error"]
 
 
 @pytest.mark.asyncio
